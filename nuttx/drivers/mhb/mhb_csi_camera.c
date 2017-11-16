@@ -462,13 +462,13 @@ static int _mhb_camera_set_apbe_enable(int state)
     return ret;
 }
 
-static int _mhb_csi_camera_config_req(uint8_t *cfg, size_t cfg_size)
+static int _mhb_csi_camera_config_req(uint8_t cdsi_interface, uint8_t *cfg, size_t cfg_size)
 {
     struct mhb_hdr hdr;
     int result = -1;
 
     memset(&hdr, 0, sizeof(hdr));
-    hdr.addr = s_mhb_camera.cdsi_interface;
+    hdr.addr = cdsi_interface;
     hdr.type = MHB_TYPE_CDSI_CONFIG_REQ;
 
     result = device_mhb_send(s_mhb_camera.mhb_device, &hdr, (uint8_t *)cfg, cfg_size, 0);
@@ -480,13 +480,13 @@ static int _mhb_csi_camera_config_req(uint8_t *cfg, size_t cfg_size)
     return result;
 }
 
-static int _mhb_csi_camera_unconfig_req(void)
+static int _mhb_csi_camera_unconfig_req(uint8_t cdsi_interface)
 {
     struct mhb_hdr hdr;
     int result = 0;
 
     memset(&hdr, 0, sizeof(hdr));
-    hdr.addr = s_mhb_camera.cdsi_interface;
+    hdr.addr = cdsi_interface;
     hdr.type = MHB_TYPE_CDSI_UNCONFIG_REQ;
 
     result = device_mhb_send(s_mhb_camera.mhb_device, &hdr, NULL, 0, 0);
@@ -499,14 +499,14 @@ static int _mhb_csi_camera_unconfig_req(void)
 }
 
 
-static int _mhb_csi_camera_control_req(uint8_t command)
+static int _mhb_csi_camera_control_req(uint8_t cdsi_interface, uint8_t command)
 {
     struct mhb_hdr hdr;
     struct mhb_cdsi_control_req req;
     int result = 0;
 
     memset(&hdr, 0, sizeof(hdr));
-    hdr.addr = s_mhb_camera.cdsi_interface;
+    hdr.addr = cdsi_interface;
     hdr.type = MHB_TYPE_CDSI_CONTROL_REQ;
 
     req.command = command;
@@ -523,7 +523,7 @@ static int _mhb_csi_camera_control_req(uint8_t command)
 static int _mhb_csi_camera_handle_msg(struct device *dev,
     struct mhb_hdr *hdr, uint8_t *payload, size_t payload_length)
 {
-    if (hdr->addr == s_mhb_camera.cdsi_interface) {
+    if ((hdr->addr & MHB_FUNC_MASK) == MHB_FUNC_CDSI) {
         switch (hdr->type) {
         case MHB_TYPE_CDSI_WRITE_CMDS_RSP:
         case MHB_TYPE_CDSI_READ_CMDS_RSP:
@@ -565,15 +565,30 @@ static int _mhb_csi_camera_start_stream(uint8_t *cfg, size_t cfg_size)
     }
 
     pthread_mutex_lock(&s_mhb_camera.mutex);
-    if (_mhb_csi_camera_config_req(cfg, cfg_size)) {
-        CAM_ERR("ERROR: Send Config Failed\n");
+    if (_mhb_csi_camera_config_req(MHB_ADDR_CDSI0, cfg, cfg_size)) {
+        CAM_ERR("ERROR: Send Config 0 Failed\n");
         pthread_mutex_unlock(&s_mhb_camera.mutex);
         return -EIO;
     }
 
     if (_mhb_camera_wait_for_response(&s_mhb_camera.cdsi_cond,
                                   MHB_CAM_CDSI_WAIT_MASK|MHB_TYPE_CDSI_CONFIG_RSP,
-                                  "CDSI CONFIG", MHB_CDSI_OP_TIMEOUT_NS)) {
+                                  "CDSI CONFIG 0", MHB_CDSI_OP_TIMEOUT_NS)) {
+        pthread_mutex_unlock(&s_mhb_camera.mutex);
+        return -EIO;
+    }
+    pthread_mutex_unlock(&s_mhb_camera.mutex);
+
+    pthread_mutex_lock(&s_mhb_camera.mutex);
+    if (_mhb_csi_camera_config_req(MHB_ADDR_CDSI1, cfg, cfg_size)) {
+        CAM_ERR("ERROR: Send Config 1 Failed\n");
+        pthread_mutex_unlock(&s_mhb_camera.mutex);
+        return -EIO;
+    }
+
+    if (_mhb_camera_wait_for_response(&s_mhb_camera.cdsi_cond,
+                                  MHB_CAM_CDSI_WAIT_MASK|MHB_TYPE_CDSI_CONFIG_RSP,
+                                  "CDSI CONFIG 1", MHB_CDSI_OP_TIMEOUT_NS)) {
         pthread_mutex_unlock(&s_mhb_camera.mutex);
         return -EIO;
     }
@@ -585,15 +600,30 @@ static int _mhb_csi_camera_start_stream(uint8_t *cfg, size_t cfg_size)
     }
 
     pthread_mutex_lock(&s_mhb_camera.mutex);
-    if (_mhb_csi_camera_control_req(MHB_CDSI_COMMAND_START)) {
-        CAM_ERR("ERROR: MHB_CDSI_COMMAND_START Failed\n");
+    if (_mhb_csi_camera_control_req(MHB_ADDR_CDSI1, MHB_CDSI_COMMAND_START)) {
+        CAM_ERR("ERROR: MHB_CDSI_COMMAND_START 1 Failed\n");
         pthread_mutex_unlock(&s_mhb_camera.mutex);
         return -EIO;
     }
 
     if (_mhb_camera_wait_for_response(&s_mhb_camera.cdsi_cond,
                                   MHB_CAM_CDSI_WAIT_MASK|MHB_TYPE_CDSI_CONTROL_RSP,
-                                  "CDSI START", MHB_CDSI_OP_TIMEOUT_NS)) {
+                                  "CDSI START 1", MHB_CDSI_OP_TIMEOUT_NS)) {
+        pthread_mutex_unlock(&s_mhb_camera.mutex);
+        return -EIO;
+    }
+    pthread_mutex_unlock(&s_mhb_camera.mutex);
+
+    pthread_mutex_lock(&s_mhb_camera.mutex);
+    if (_mhb_csi_camera_control_req(MHB_ADDR_CDSI0, MHB_CDSI_COMMAND_START)) {
+        CAM_ERR("ERROR: MHB_CDSI_COMMAND_START 0 Failed\n");
+        pthread_mutex_unlock(&s_mhb_camera.mutex);
+        return -EIO;
+    }
+
+    if (_mhb_camera_wait_for_response(&s_mhb_camera.cdsi_cond,
+                                  MHB_CAM_CDSI_WAIT_MASK|MHB_TYPE_CDSI_CONTROL_RSP,
+                                  "CDSI START 0", MHB_CDSI_OP_TIMEOUT_NS)) {
         pthread_mutex_unlock(&s_mhb_camera.mutex);
         return -EIO;
     }
@@ -606,24 +636,54 @@ static int _mhb_csi_camera_stop_stream(void)
     int ret = -1;
 
     pthread_mutex_lock(&s_mhb_camera.mutex);
-    ret = _mhb_csi_camera_control_req(MHB_CDSI_COMMAND_STOP);
+    ret = _mhb_csi_camera_control_req(MHB_ADDR_CDSI1, MHB_CDSI_COMMAND_STOP);
 
     if (!ret) {
         ret = _mhb_camera_wait_for_response(&s_mhb_camera.cdsi_cond,
                               MHB_CAM_CDSI_WAIT_MASK|MHB_TYPE_CDSI_CONTROL_RSP,
-                              "CDSI STOP", MHB_CDSI_OP_TIMEOUT_NS);
+                              "CDSI STOP 1", MHB_CDSI_OP_TIMEOUT_NS);
     }
     pthread_mutex_unlock(&s_mhb_camera.mutex);
 
-    MHB_CAM_DEV_OP(s_mhb_camera.cam_device, stream_disable);
-
     if (ret) {
-        CAM_ERR("ERROR: CDSI STOP Failed\n");
+        CAM_ERR("ERROR: CDSI STOP 1 Failed\n");
         return -1;
     }
 
     pthread_mutex_lock(&s_mhb_camera.mutex);
-    if (_mhb_csi_camera_unconfig_req()) {
+    ret = _mhb_csi_camera_control_req(MHB_ADDR_CDSI0, MHB_CDSI_COMMAND_STOP);
+
+    if (!ret) {
+        ret = _mhb_camera_wait_for_response(&s_mhb_camera.cdsi_cond,
+                              MHB_CAM_CDSI_WAIT_MASK|MHB_TYPE_CDSI_CONTROL_RSP,
+                              "CDSI STOP 0", MHB_CDSI_OP_TIMEOUT_NS);
+    }
+    pthread_mutex_unlock(&s_mhb_camera.mutex);
+
+    if (ret) {
+        CAM_ERR("ERROR: CDSI STOP 0 Failed\n");
+        return -1;
+    }
+
+    MHB_CAM_DEV_OP(s_mhb_camera.cam_device, stream_disable);
+
+    pthread_mutex_lock(&s_mhb_camera.mutex);
+    if (_mhb_csi_camera_unconfig_req(MHB_ADDR_CDSI1)) {
+        CAM_ERR("ERROR: Send UnConfig Failed\n");
+        pthread_mutex_unlock(&s_mhb_camera.mutex);
+        return -1;
+    }
+
+    if (_mhb_camera_wait_for_response(&s_mhb_camera.cdsi_cond,
+                                  MHB_CAM_CDSI_WAIT_MASK|MHB_TYPE_CDSI_UNCONFIG_RSP,
+                                  "CDSI UNCONFIG", MHB_CDSI_OP_TIMEOUT_NS)) {
+        pthread_mutex_unlock(&s_mhb_camera.mutex);
+        return -1;
+    }
+    pthread_mutex_unlock(&s_mhb_camera.mutex);
+
+    pthread_mutex_lock(&s_mhb_camera.mutex);
+    if (_mhb_csi_camera_unconfig_req(MHB_ADDR_CDSI0)) {
         CAM_ERR("ERROR: Send UnConfig Failed\n");
         pthread_mutex_unlock(&s_mhb_camera.mutex);
         return -1;
@@ -1071,7 +1131,15 @@ static int _dev_open(struct device *dev)
         goto open_failed;
     }
 
-    ret = device_mhb_register_receiver(mhb_camera->mhb_device, s_mhb_camera.cdsi_interface,
+    ret = device_mhb_register_receiver(mhb_camera->mhb_device, MHB_ADDR_CDSI0,
+                                       _mhb_csi_camera_handle_msg);
+
+    if(ret) {
+        CAM_ERR("ERROR: Failed to register device_mhb_register_receiver %d\n", ret);
+        goto open_failed;
+    }
+
+    ret = device_mhb_register_receiver(mhb_camera->mhb_device, MHB_ADDR_CDSI1,
                                        _mhb_csi_camera_handle_msg);
 
     if(ret) {
@@ -1099,7 +1167,10 @@ static void _dev_close(struct device *dev)
     struct mhb_camera_s* mhb_camera = (struct mhb_camera_s*)device_get_private(dev);
 
     if (mhb_camera->mhb_device) {
-        device_mhb_unregister_receiver(mhb_camera->mhb_device, s_mhb_camera.cdsi_interface,
+        device_mhb_unregister_receiver(mhb_camera->mhb_device, MHB_ADDR_CDSI0,
+                                       _mhb_csi_camera_handle_msg);
+
+        device_mhb_unregister_receiver(mhb_camera->mhb_device, MHB_ADDR_CDSI1,
                                        _mhb_csi_camera_handle_msg);
     }
 
